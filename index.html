@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>TURRET 180° — Stage 1 Vertical Slice (Phase 0)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #040812;
+      font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+      color: #0f172a;
+    }
+    #app-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    /* Title Overlay — White Panel + Blue Glow Line style */
+    #title-overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 50% 45%, rgba(12, 24, 48, 0.72), rgba(4, 8, 18, 0.94));
+      z-index: 20;
+      padding: 20px;
+    }
+    #title-overlay.hidden {
+      display: none;
+    }
+    .panel {
+      width: 100%;
+      max-width: 560px;
+      background: rgba(241, 245, 249, 0.96);
+      border: 2px solid #00d2ff;
+      box-shadow: 0 0 28px rgba(0, 210, 255, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+      border-radius: 8px;
+      padding: 28px 30px;
+    }
+    .panel-header {
+      border-bottom: 2px solid #00a8e8;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+    }
+    .panel-tag {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      color: #0284c7;
+      text-transform: uppercase;
+    }
+    h1 {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: #0f172a;
+      margin-top: 4px;
+    }
+    .notice-box {
+      background: #e0f2fe;
+      border-left: 4px solid #0284c7;
+      padding: 10px 14px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #0c4a6e;
+      line-height: 1.5;
+    }
+    .how-to {
+      font-size: 13px;
+      color: #334155;
+      line-height: 1.65;
+      margin-bottom: 18px;
+    }
+    .how-to ul {
+      margin-left: 18px;
+      margin-top: 4px;
+    }
+    .hand-select {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 20px;
+    }
+    .hand-select-label {
+      font-size: 14px;
+      font-weight: 700;
+      color: #1e293b;
+    }
+    .hand-options {
+      display: flex;
+      gap: 14px;
+    }
+    .hand-options label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    button.btn-primary {
+      appearance: none;
+      border: 2px solid #00a8e8;
+      background: #0284c7;
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 12px 18px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s ease, box-shadow 0.15s ease;
+    }
+    button.btn-primary:hover:not(:disabled) {
+      background: #0369a1;
+      box-shadow: 0 0 14px rgba(0, 210, 255, 0.45);
+    }
+    button.btn-secondary {
+      appearance: none;
+      border: 2px solid #94a3b8;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 12px 18px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button.btn-secondary:hover:not(:disabled) {
+      border-color: #0284c7;
+      color: #0284c7;
+    }
+    button:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+    }
+    #xr-status {
+      font-size: 12px;
+      color: #475569;
+      text-align: center;
+      margin-top: 4px;
+    }
+    /* PC Preview HUD hint (non-intrusive corner bar) */
+    #preview-hud {
+      position: fixed;
+      left: 14px;
+      bottom: 14px;
+      background: rgba(15, 23, 42, 0.78);
+      border: 1px solid rgba(0, 210, 255, 0.65);
+      color: #e2e8f0;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 8px 12px;
+      border-radius: 6px;
+      z-index: 10;
+      pointer-events: auto;
+    }
+    #preview-hud.hidden {
+      display: none;
+    }
+    #preview-hud strong {
+      color: #38bdf8;
+    }
+    #btn-back-title {
+      margin-left: 10px;
+      padding: 2px 8px;
+      font-size: 11px;
+      background: #1e293b;
+      color: #38bdf8;
+      border: 1px solid #38bdf8;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="title-overlay">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-tag">Stage 1 Vertical Slice // Phase 1</div>
+        <h1>180° 固定砲台VRシューティング（仮称）</h1>
+      </div>
+
+      <div class="notice-box">
+        回転椅子推奨／使うコントローラーのストラップを付けてください
+      </div>
+
+      <div class="how-to">
+        <strong>遊び方（Stage 1 試作）：</strong>
+        <ul>
+          <li>移動なし・正面180度の固定砲台（後方はコクピット内壁）</li>
+          <li>選択した側のコントローラー1本を両手で掴んで狙う・撃つ</li>
+          <li>トリガー長押し＝連射（0.12秒間隔）／ A・B（左はX・Y）＝単発</li>
+        </ul>
+      </div>
+
+      <div class="hand-select">
+        <span class="hand-select-label">使うコントローラー（1本のみ）</span>
+        <div class="hand-options">
+          <label><input type="radio" name="hand" value="right" checked /> 右（既定）</label>
+          <label><input type="radio" name="hand" value="left" /> 左</label>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="btn-start-vr" class="btn-primary" disabled>VRで開始 (WebXR)</button>
+        <button id="btn-start-pc" class="btn-secondary">PCプレビューで開始</button>
+        <div id="xr-status">WebXR 対応状況を確認中...</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="preview-hud" class="hidden">
+    <strong>PCプレビュー：</strong>
+    マウス＝照準 / 左長押し＝連射 / Z・X（J・K）＝単発 / 右ドラッグ＝視線回転 / WASD＝頭移動 / R＝正面リセット
+    <button id="btn-back-title">タイトルへ</button>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -222,6 +222,7 @@ btnBackTitle.addEventListener('click', () => {
 btnStartVr.addEventListener('click', async () => {
   if (!navigator.xr) return;
   try {
+    audio.unlock(); // Unlock WebAudio synchronously inside user gesture before await
     btnStartVr.disabled = true;
     const session = await navigator.xr.requestSession('immersive-vr', {
       optionalFeatures: ['local'],
@@ -259,14 +260,18 @@ renderer.setAnimationLoop((nowMs) => {
 
   if (mode !== 'TITLE') {
     elapsedSeconds = Math.min(90.0, elapsedSeconds + dt);
-    const inputState = input.update(dt, isXr);
-    for (let i = 0; i < dummyTargets.length; i++) {
-      dummyTargets[i].update(dt);
+    try {
+      const inputState = input.update(dt, isXr);
+      for (let i = 0; i < dummyTargets.length; i++) {
+        dummyTargets[i].update(dt);
+      }
+      weapons.update(dt, inputState, dummyTargets, (killedTarget) => {
+        score += killedTarget.scoreValue;
+      });
+      cockpit.updateConsole(score, elapsedSeconds);
+    } catch (err) {
+      console.warn('[main] Frame update error:', err);
     }
-    weapons.update(dt, inputState, dummyTargets, (killedTarget) => {
-      score += killedTarget.scoreValue;
-    });
-    cockpit.updateConsole(score, elapsedSeconds);
   }
 
   renderer.render(scene, camera);

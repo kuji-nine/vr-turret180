@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 
 /**
- * Input handler for Phase 1:
+ * Input handler for Phase 1 (Hardened for Quest Browser WebXR):
  * - VR (WebXR):
- *     - Tracks ONLY the selected dominant hand ('right' or 'left'); ignores the other controller completely.
- *     - Trigger (buttons[0]) held -> rapid fire (0.12s interval handled in weapons.js).
- *     - A/B (or X/Y on left: buttons[4], buttons[5]) rising edge -> single shot per press (alternating allowed).
- *     - Haptic pulse sent ONLY to the active hand's gamepad.
+ *     - Tracks ONLY the selected dominant hand ('right' or 'left').
+ *     - Unselected controller's connected, disconnected, selectstart/end, and gamepad
+ *       events/data are completely ignored.
+ *     - Uses the exact same XRInputSource (event.data) bound to the tracked controller
+ *       for both aim ray and button/haptic input.
+ *     - Trigger: selectstart/end OR gamepad.buttons[0] -> rapid fire (0.12s interval).
+ *     - A/B (or X/Y on left): gamepad.buttons[4], buttons[5] rising edge -> single shot.
+ *     - Per-frame XR reading is guarded with try/catch and finite-number checks so a
+ *       transient input anomaly can never freeze the render loop.
  * - PC Preview:
  *     - Mouse cursor position aims the turret ray across the screen.
  *     - Left mouse button held -> rapid fire.
@@ -48,16 +53,70 @@ export function createInput(cameraRig, camera, renderer) {
   const aimOrigin = new THREE.Vector3();
   const aimDirection = new THREE.Vector3(0, 0, -1);
 
-  // XR controllers (index 0 & 1) mapped dynamically by handedness
+  // XR controllers (index 0 & 1). We bind ONLY the one matching activeHand.
   const xrControllers = [renderer.xr.getController(0), renderer.xr.getController(1)];
-  const controllerHandedness = [null, null];
+  const boundSources = [null, null]; // XRInputSource per controller slot
+
+  let activeSlot = -1;
+  let activeInputSource = null;
+  let xrSelectHeld = false;
+
+  function refreshActiveBinding() {
+    activeSlot = -1;
+    activeInputSource = null;
+    xrSelectHeld = false;
+    prevBtn4 = false;
+    prevBtn5 = false;
+
+    for (let i = 0; i < boundSources.length; i++) {
+      const src = boundSources[i];
+      if (src && src.handedness === activeHand) {
+        activeSlot = i;
+        activeInputSource = src;
+        break;
+      }
+    }
+  }
+
   xrControllers.forEach((ctrl, idx) => {
     cameraRig.add(ctrl);
+
     ctrl.addEventListener('connected', (event) => {
-      controllerHandedness[idx] = event.data?.handedness || null;
+      try {
+        const src = event?.data || null;
+        boundSources[idx] = src;
+        // Ignore unselected hand completely; only bind if it matches activeHand
+        if (src && src.handedness === activeHand) {
+          activeSlot = idx;
+          activeInputSource = src;
+          xrSelectHeld = false;
+          prevBtn4 = false;
+          prevBtn5 = false;
+        }
+      } catch (err) {
+        console.warn('[input] XR connected handler error:', err);
+      }
     });
+
     ctrl.addEventListener('disconnected', () => {
-      controllerHandedness[idx] = null;
+      try {
+        boundSources[idx] = null;
+        if (idx === activeSlot) {
+          refreshActiveBinding();
+        }
+      } catch (err) {
+        console.warn('[input] XR disconnected handler error:', err);
+      }
+    });
+
+    ctrl.addEventListener('selectstart', () => {
+      if (idx !== activeSlot) return; // Completely ignore unselected controller
+      xrSelectHeld = true;
+    });
+
+    ctrl.addEventListener('selectend', () => {
+      if (idx !== activeSlot) return; // Completely ignore unselected controller
+      xrSelectHeld = false;
     });
   });
 
@@ -66,6 +125,7 @@ export function createInput(cameraRig, camera, renderer) {
   const tempPos = new THREE.Vector3();
   const tempQuat = new THREE.Quaternion();
   const tempScale = new THREE.Vector3();
+  const tempDir = new THREE.Vector3();
   const forwardVec = new THREE.Vector3(0, 0, -1);
 
   // Previous button states for rising-edge detection (buttons[4], buttons[5])
@@ -157,23 +217,19 @@ export function createInput(cameraRig, camera, renderer) {
     camera.rotation.set(0, 0, 0);
   }
 
-  function getActiveXrInputSource() {
-    const session = renderer.xr.getSession();
-    if (!session) return null;
-    for (const source of session.inputSources) {
-      if (source.handedness === activeHand) {
-        return source;
-      }
-    }
-    return null;
+  function isFiniteVec3(v) {
+    return Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
   }
 
   function pulseHaptics(amplitude, durationMs) {
     if (!renderer.xr.isPresenting) return;
-    const source = getActiveXrInputSource();
-    const actuators = source?.gamepad?.hapticActuators;
-    if (actuators && actuators.length > 0 && typeof actuators[0].pulse === 'function') {
-      actuators[0].pulse(amplitude, durationMs);
+    try {
+      const actuators = activeInputSource?.gamepad?.hapticActuators;
+      if (actuators && actuators.length > 0 && typeof actuators[0]?.pulse === 'function') {
+        actuators[0].pulse(amplitude, durationMs);
+      }
+    } catch (err) {
+      // Never let haptics failure interrupt gameplay
     }
   }
 
@@ -186,6 +242,10 @@ export function createInput(cameraRig, camera, renderer) {
     hasActiveController: false,
   };
 
+  function isButtonDown(btn) {
+    return Boolean(btn && (btn.pressed || btn.value > 0.5));
+  }
+
   function update(dt, isXrPresenting) {
     frameState.triggerHeld = false;
     frameState.singleFireCount = 0;
@@ -196,39 +256,46 @@ export function createInput(cameraRig, camera, renderer) {
     }
 
     if (isXrPresenting) {
-      // Find the controller matching activeHand ONLY; ignore the other hand
-      let activeCtrl = null;
-      for (let i = 0; i < xrControllers.length; i++) {
-        if (controllerHandedness[i] === activeHand) {
-          activeCtrl = xrControllers[i];
-          break;
+      try {
+        // Ensure activeSlot matches activeHand if connected before setActiveHand
+        if (activeSlot < 0 || !activeInputSource || activeInputSource.handedness !== activeHand) {
+          refreshActiveBinding();
         }
-      }
 
-      if (activeCtrl) {
-        activeCtrl.updateMatrixWorld(true);
-        tempMat4.copy(activeCtrl.matrixWorld);
-        tempMat4.decompose(tempPos, tempQuat, tempScale);
-        aimOrigin.copy(tempPos);
-        aimDirection.copy(forwardVec).applyQuaternion(tempQuat).normalize();
-        frameState.hasActiveController = true;
-      }
+        const activeCtrl = activeSlot >= 0 ? xrControllers[activeSlot] : null;
+        if (activeCtrl) {
+          activeCtrl.updateMatrixWorld(true);
+          tempMat4.copy(activeCtrl.matrixWorld);
+          tempMat4.decompose(tempPos, tempQuat, tempScale);
+          tempDir.copy(forwardVec).applyQuaternion(tempQuat);
 
-      const source = getActiveXrInputSource();
-      const gp = source?.gamepad;
-      if (gp && gp.buttons) {
-        const trig = gp.buttons[0];
-        frameState.triggerHeld = Boolean(trig && (trig.pressed || trig.value > 0.5));
+          if (isFiniteVec3(tempPos) && isFiniteVec3(tempDir) && tempDir.lengthSq() > 1e-6) {
+            aimOrigin.copy(tempPos);
+            aimDirection.copy(tempDir).normalize();
+            frameState.hasActiveController = true;
+          }
+        }
 
-        const b4 = Boolean(gp.buttons[4]?.pressed);
-        const b5 = Boolean(gp.buttons[5]?.pressed);
-        if (b4 && !prevBtn4) frameState.singleFireCount += 1;
-        if (b5 && !prevBtn5) frameState.singleFireCount += 1;
-        prevBtn4 = b4;
-        prevBtn5 = b5;
-      } else {
-        prevBtn4 = false;
-        prevBtn5 = false;
+        // Read gamepad from the EXACT SAME XRInputSource bound to activeCtrl
+        const gp = activeInputSource?.gamepad;
+        const buttons = gp?.buttons;
+        if (buttons && buttons.length > 0) {
+          const trigDown = isButtonDown(buttons[0]);
+          frameState.triggerHeld = xrSelectHeld || trigDown;
+
+          const b4 = buttons.length > 4 ? isButtonDown(buttons[4]) : false;
+          const b5 = buttons.length > 5 ? isButtonDown(buttons[5]) : false;
+          if (b4 && !prevBtn4) frameState.singleFireCount += 1;
+          if (b5 && !prevBtn5) frameState.singleFireCount += 1;
+          prevBtn4 = b4;
+          prevBtn5 = b5;
+        } else {
+          frameState.triggerHeld = xrSelectHeld;
+          prevBtn4 = false;
+          prevBtn5 = false;
+        }
+      } catch (err) {
+        console.warn('[input] XR update error:', err);
       }
       return frameState;
     }
@@ -287,14 +354,14 @@ export function createInput(cameraRig, camera, renderer) {
       if (!enabled) {
         isRightDragging = false;
         leftMouseHeld = false;
+        xrSelectHeld = false;
         pcSingleFireQueue = 0;
         keys.clear();
       }
     },
     setActiveHand(hand) {
       activeHand = hand === 'left' ? 'left' : 'right';
-      prevBtn4 = false;
-      prevBtn5 = false;
+      refreshActiveBinding();
     },
     getActiveHand() {
       return activeHand;
